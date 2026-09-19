@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>末日突围：人类 VS 兽人</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#10151c;color:#fff;font-family:Arial,"Microsoft YaHei",sans-serif;overflow:hidden}
+#wrap{position:relative;width:100vw;height:100vh;display:flex;align-items:center;justify-content:center}
+canvas{background:#26342c;max-width:100vw;max-height:100vh;cursor:crosshair;image-rendering:auto}
+#help{position:absolute;left:16px;top:14px;padding:10px 13px;background:rgba(0,0,0,.58);border-radius:10px;font-size:13px;line-height:1.6;pointer-events:none}
+#start,#over{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(3,7,10,.78)}
+.panel{width:min(520px,90vw);padding:30px;border:1px solid #4c6170;border-radius:18px;background:linear-gradient(180deg,#18232c,#0e151b);box-shadow:0 20px 70px #000}
+h1{margin:0 0 10px;font-size:32px}p{color:#b9c6ce;line-height:1.6}
+button{border:0;border-radius:10px;padding:13px 20px;background:#4fa7ff;color:white;font-size:16px;font-weight:700;cursor:pointer}
+button:hover{filter:brightness(1.12)}
+.badge{display:inline-block;padding:5px 9px;border-radius:999px;background:#263b4c;color:#9ed0ff;margin:4px}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<div id="wrap">
+<canvas id="game" width="1100" height="700"></canvas>
+<div id="help">WASD 移动 · 鼠标瞄准/左键射击 · R 换弹 · E 搜索补给箱 · F 使用急救包<br>目标：搜集资源、守住安全区、击退逐渐增强的兽人。</div>
+<div id="start"><div class="panel">
+<h1>末日突围：人类 VS 兽人</h1>
+<p>单机生存射击版。开局有保护时间，兽人会巡逻、警戒，枪声会吸引附近敌人。你可以搜索建筑、捡补给、换弹、治疗，并在缩小的安全区内生存。</p>
+<div><span class="badge">人类主角</span><span class="badge">2D 射击</span><span class="badge">建筑掩体</span><span class="badge">安全区</span><span class="badge">兽人 AI</span></div>
+<br><br><button id="startBtn">开始游戏</button>
+</div></div>
+<div id="over" class="hidden"><div class="panel">
+<h1 id="overTitle">任务结束</h1><p id="overText"></p><button id="restartBtn">重新开始</button>
+</div></div>
+</div>
+<script>
+const c=document.getElementById('game'),ctx=c.getContext('2d');
+const W=c.width,H=c.height;
+let keys={},mouse={x:W/2,y:H/2,down:false},running=false,last=0,shake=0;
+let player,enemies=[],bullets=[],loot=[],walls=[],zone,wave=0,waveTimer=0,spawnTimer=0,gameTime=0,kills=0;
+const rnd=(a,b)=>a+Math.random()*(b-a), clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+document.addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true;if(!running)return;
+ if(e.key.toLowerCase()==='r')reload(); if(e.key.toLowerCase()==='f')heal(); if(e.key.toLowerCase()==='e')search();
+});
+document.addEventListener('keyup',e=>keys[e.key.toLowerCase()]=false);
+c.addEventListener('mousemove',e=>{let r=c.getBoundingClientRect();mouse.x=(e.clientX-r.left)*W/r.width;mouse.y=(e.clientY-r.top)*H/r.height});
+c.addEventListener('mousedown',e=>{if(e.button===0)mouse.down=true});
+window.addEventListener('mouseup',()=>mouse.down=false);
+function reset(){
+ player={x:W/2,y:H/2,r:16,hp:120,maxHp:120,armor:75,ammo:30,reserve:120,maxAmmo:30,reload:0,med:3,score:0,invuln:0,downed:0,fireCd:0};
+ enemies=[];bullets=[];loot=[];walls=[];kills=0;wave=0;waveTimer=7;spawnTimer=5;gameTime=0;shake=0;
+ zone={x:W/2,y:H/2,r:315,target:315};
+ for(let i=0;i<12;i++){let w=rnd(70,150),h=rnd(55,100),x=rnd(60,W-60-w),y=rnd(70,H-60-h);if(Math.hypot(x+w/2-W/2,y+h/2-H/2)>170)walls.push({x,y,w,h})}
+ for(let i=0;i<10;i++)spawnLoot();
+ running=true;document.getElementById('start').classList.add('hidden');document.getElementById('over').classList.add('hidden');
+ requestAnimationFrame(loop);
+}
+function freePos(r=18){
+ for(let k=0;k<100;k++){let x=rnd(40,W-40),y=rnd(70,H-40);if(Math.hypot(x-player.x,y-player.y)<170)continue;
+  if(walls.every(w=>x< w.x-r || x>w.x+w.w+r || y<w.y-r || y>w.y+w.h+r))return{x,y}}
+ return{x:rnd(50,W-50),y:rnd(80,H-50)}
+}
+function spawnLoot(){let p=freePos();let types=['ammo','med','armor','rifle'];loot.push({x:p.x,y:p.y,type:types[Math.floor(Math.random()*types.length)],r:10})}
+function reload(){if(player.reload<=0&&player.ammo<player.maxAmmo&&player.reserve>0)player.reload=1.1}
+function heal(){if(player.med>0&&player.hp<player.maxHp&&!player.downed){player.med--;player.hp=Math.min(player.maxHp,player.hp+45)}}
+function search(){for(let i=loot.length-1;i>=0;i--){let l=loot[i];if(Math.hypot(l.x-player.x,l.y-player.y)<34){if(l.type==='ammo')player.reserve+=45;
+ else if(l.type==='med')player.med++;else if(l.type==='armor')player.armor=Math.min(100,player.armor+35);
+ else {player.reserve+=60;player.ammo=player.maxAmmo}loot.splice(i,1);return}}}
+function collides(x,y,r){
+ if(x<r||x>W-r||y<70+r||y>H-r)return true;
+ return walls.some(w=>x>w.x-r&&x<w.x+w.w+r&&y>w.y-r&&y<w.y+w.h+r);
+}
+function moveObj(o,dx,dy){
+ let nx=o.x+dx,ny=o.y+dy;if(!collides(nx,o.y,o.r))o.x=nx;if(!collides(o.x,ny,o.r))o.y=ny;
+}
+function shoot(){
+ if(player.reload>0||player.fireCd>0||player.downed)return;
+ if(player.ammo<=0){reload();return}
+ let a=Math.atan2(mouse.y-player.y,mouse.x-player.x);player.ammo--;player.fireCd=.12;
+ bullets.push({x:player.x+Math.cos(a)*18,y:player.y+Math.sin(a)*18,vx:Math.cos(a)*760,vy:Math.sin(a)*760,r:3,life:.9});
+ // gunshot attracts nearby enemies
+ enemies.forEach(e=>{if(Math.hypot(e.x-player.x,e.y-player.y)<260)e.alert=3.5});
+}
+function spawnEnemy(kind){
+ let p=freePos(20), hp=kind==='elite'?120:kind==='fast'?55:75;
+ enemies.push({x:p.x,y:p.y,r:kind==='elite'?20:17,hp,maxHp:hp,kind,alert:0,patrol:0,hit:0});
+}
+function nextWave(){
+ wave++;waveTimer=12;spawnTimer=1.5;
+ let n=Math.min(2+wave,9);
+ for(let i=0;i<n;i++)spawnEnemy(i===n-1&&wave>=3?'elite':(i===0&&wave>=2?'fast':'normal'));
+ if(wave%2===0){spawnLoot();spawnLoot()}
+}
+function hurt(d){
+ if(player.invuln>0||player.downed)return;
+ let absorbed=Math.min(player.armor,d*.55);player.armor-=absorbed;d-=absorbed;player.hp-=d;player.invuln=.35;
+ if(player.hp<=0){player.hp=0;player.downed=15}
+}
+function enemyAttack(e){
+ let d=e.kind==='elite'?13: e.kind==='fast'?8:6;hurt(d);
+}
+function update(dt){
+ gameTime+=dt;
+ if(player.invuln>0)player.invuln-=dt;
+ if(player.reload>0){player.reload-=dt;if(player.reload<=0){let need=player.maxAmmo-player.ammo,take=Math.min(need,player.reserve);player.ammo+=take;player.reserve-=take}}
+ if(player.fireCd>0)player.fireCd-=dt;
+ if(player.downed){
+   let dx=(keys['d']?1:0)-(keys['a']?1:0),dy=(keys['s']?1:0)-(keys['w']?1:0);let len=Math.hypot(dx,dy)||1;moveObj(player,dx/len*35*dt,dy/len*35*dt);
+   player.downed-=dt;if(player.downed<=0){endGame(false,'你被兽人包围了。')}
+   return;
+ }
+ let dx=(keys['d']?1:0)-(keys['a']?1:0),dy=(keys['s']?1:0)-(keys['w']?1:0);let len=Math.hypot(dx,dy)||1;
+ moveObj(player,dx/len*190*dt,dy/len*190*dt);
+ if(mouse.down)shoot();
+ waveTimer-=dt;if(wave===0&&waveTimer<=0)nextWave(); else if(wave>0&&waveTimer<=0)nextWave();
+ // shrinking safe zone after 20 sec
+ if(gameTime>20)zone.target=Math.max(125,315-(gameTime-20)*3.1);
+ zone.r+=(zone.target-zone.r)*dt*.7;
+ if(Math.hypot(player.x-zone.x,player.y-zone.y)>zone.r)hurt(5*dt);
+ // bullets
+ for(let i=bullets.length-1;i>=0;i--){let b=bullets[i];b.x+=b.vx*dt;b.y+=b.vy*dt;b.life-=dt;
+  let remove=b.life<=0||b.x<0||b.x>W||b.y<70||b.y>H||walls.some(w=>b.x>w.x&&b.x<w.x+w.w&&b.y>w.y&&b.y<w.y+w.h);
+  for(let j=enemies.length-1;j>=0&&!remove;j--){let e=enemies[j];if(Math.hypot(b.x-e.x,b.y-e.y)<e.r+5){e.hp-=35;e.hit=.08;e.alert=6;remove=true;if(e.hp<=0){kills++;player.score+=e.kind==='elite'?300:e.kind==='fast'?150:100;if(Math.random()<.45)loot.push({x:e.x,y:e.y,type:Math.random()<.5?'ammo':'med',r:10});enemies.splice(j,1)}}}
+  if(remove)bullets.splice(i,1);
+ }
+ // enemies
+ enemies.forEach(e=>{
+  if(e.hit>0)e.hit-=dt;e.alert-=dt;
+  let dist=Math.hypot(player.x-e.x,player.y-e.y), chase=e.alert>0||dist<120+(wave*8);
+  let ex=0,ey=0;
+  if(chase){ex=(player.x-e.x)/(dist||1);ey=(player.y-e.y)/(dist||1)}
+  else {e.patrol-=dt;if(e.patrol<=0){e.patrol=rnd(1,3);e.tx=rnd(80,W-80);e.ty=rnd(90,H-70)}
+    let dd=Math.hypot(e.tx-e.x,e.ty-e.y);ex=(e.tx-e.x)/(dd||1);ey=(e.ty-e.y)/(dd||1)}
+  let sp=e.kind==='elite'?48:e.kind==='fast'?86:58;moveObj(e,ex*sp*dt,ey*sp*dt);
+  if(dist<e.r+player.r+4)enemyAttack(e);
+ });
+}
+function draw(){
+ ctx.save();if(shake>0){ctx.translate(rnd(-shake,shake),rnd(-shake,shake));shake*=.9}
+ ctx.clearRect(0,0,W,H);
+ // ground
+ ctx.fillStyle='#2c3a32';ctx.fillRect(0,0,W,H);
+ ctx.strokeStyle='rgba(255,255,255,.04)';for(let x=0;x<W;x+=40){ctx.beginPath();ctx.moveTo(x,70);ctx.lineTo(x,H);ctx.stroke()}for(let y=70;y<H;y+=40){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}
+ // zone
+ ctx.beginPath();ctx.arc(zone.x,zone.y,zone.r,0,Math.PI*2);ctx.strokeStyle='rgba(95,190,255,.8)';ctx.lineWidth=5;ctx.stroke();
+ ctx.fillStyle='rgba(40,120,190,.07)';ctx.fill();
+ // walls
+ walls.forEach(w=>{ctx.fillStyle='#515c62';ctx.fillRect(w.x,w.y,w.w,w.h);ctx.fillStyle='#68757a';ctx.fillRect(w.x+6,w.y+6,w.w-12,8);ctx.strokeStyle='#263238';ctx.strokeRect(w.x,w.y,w.w,w.h)});
+ // loot
+ loot.forEach(l=>{ctx.beginPath();ctx.arc(l.x,l.y,l.r,0,Math.PI*2);ctx.fillStyle=l.type==='ammo'?'#f5c542':l.type==='med'?'#e85c5c':l.type==='armor'?'#61b5d9':'#c98bff';ctx.fill();ctx.fillStyle='#111';ctx.font='bold 11px Arial';ctx.textAlign='center';ctx.fillText(l.type==='ammo'?'A':l.type==='med'?'+':l.type==='armor'?'◆':'R',l.x,l.y+4)});
+ // bullets
+ ctx.fillStyle='#ffe58a';bullets.forEach(b=>{ctx.beginPath();ctx.arc(b.x,b.y,b.r,0,Math.PI*2);ctx.fill()});
+ // enemies
+ enemies.forEach(e=>{
+  ctx.save();ctx.translate(e.x,e.y);if(e.hit>0)ctx.globalAlpha=.55;
+  ctx.fillStyle=e.kind==='elite'?'#7b1fa2':e.kind==='fast'?'#8b6b27':'#477a3f';ctx.beginPath();ctx.arc(0,0,e.r,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#1b2b19';ctx.beginPath();ctx.moveTo(-e.r*.65,-e.r*.45);ctx.lineTo(-e.r*.25,-e.r*1.1);ctx.lineTo(-e.r*.05,-e.r*.5);ctx.moveTo(e.r*.65,-e.r*.45);ctx.lineTo(e.r*.25,-e.r*1.1);ctx.lineTo(e.r*.05,-e.r*.5);ctx.fill();
+  ctx.fillStyle='#ffd43b';ctx.fillRect(-7,-4,4,3);ctx.fillRect(3,-4,4,3);ctx.fillStyle='#eee';ctx.fillRect(-4,5,3,5);ctx.fillRect(1,5,3,5);
+  ctx.restore();
+  ctx.fillStyle='#111';ctx.fillRect(e.x-22,e.y-e.r-10,44,5);ctx.fillStyle='#e74c3c';ctx.fillRect(e.x-22,e.y-e.r-10,44*(e.hp/e.maxHp),5);
+ });
+ // player
+ ctx.save();ctx.translate(player.x,player.y);let ang=Math.atan2(mouse.y-player.y,mouse.x-player.x);ctx.rotate(ang);
+ ctx.fillStyle='#26384d';ctx.fillRect(-13,-10,27,25);ctx.fillStyle='#e9b18b';ctx.beginPath();ctx.arc(0,-17,10,0,Math.PI*2);ctx.fill();
+ ctx.fillStyle='#3d78a8';ctx.fillRect(-14,-6,28,18);ctx.fillStyle='#e9b18b';ctx.fillRect(7,-3,10,6);ctx.fillStyle='#20252b';ctx.fillRect(10,-5,24,4);
+ ctx.restore();
+ // HUD
+ ctx.fillStyle='rgba(5,9,12,.78)';ctx.fillRect(0,0,W,70);
+ ctx.font='bold 14px Arial';ctx.textAlign='left';ctx.fillStyle='#fff';ctx.fillText('生命',18,23);ctx.fillStyle='#222';ctx.fillRect(60,13,160,14);ctx.fillStyle='#48d37b';ctx.fillRect(60,13,160*(player.hp/player.maxHp),14);
+ ctx.fillStyle='#fff';ctx.fillText('护甲',18,48);ctx.fillStyle='#222';ctx.fillRect(60,38,160,12);ctx.fillStyle='#4aa9d8';ctx.fillRect(60,38,160*(player.armor/100),12);
+ ctx.fillStyle='#fff';ctx.fillText(`波次 ${wave||0}`,250,25);ctx.fillText(`击杀 ${kills}`,250,50);
+ ctx.fillText(`弹药 ${player.ammo}/${player.reserve}`,360,25);ctx.fillText(`急救包 ${player.med}`,360,50);
+ ctx.fillText(`分数 ${player.score}`,500,25);ctx.fillText(gameTime<20?`保护时间 ${Math.ceil(20-gameTime)}s`:`安全区 ${Math.round(zone.r)}m`,500,50);
+ if(player.reload>0){ctx.fillStyle='#ffd166';ctx.fillText('换弹中…',650,25)}
+ if(player.downed){ctx.fillStyle='#ff6262';ctx.font='bold 22px Arial';ctx.textAlign='center';ctx.fillText(`倒地！还能坚持 ${Math.ceil(player.downed)} 秒`,W/2,100);ctx.font='14px Arial';ctx.fillText('移动寻找掩体，等待救援机制（单机版自动等待）',W/2,124)}
+ ctx.restore();
+}
+function endGame(win,msg){running=false;document.getElementById('overTitle').textContent=win?'突围成功！':'任务结束';document.getElementById('overText').textContent=msg+`  击杀：${kills}　分数：${player.score}　存活：${Math.floor(gameTime)}秒`;document.getElementById('over').classList.remove('hidden')}
+function loop(t){if(!running)return;let dt=Math.min(.033,(t-last)/1000||.016);last=t;update(dt);draw();requestAnimationFrame(loop)}
+document.getElementById('startBtn').onclick=reset;document.getElementById('restartBtn').onclick=reset;
+</script>
+</body>
+</html>
